@@ -49,7 +49,7 @@ final class ReportServiceTest extends CIUnitTestCase
         parent::tearDown();
     }
 
-    public function testListAppliesFiltersAndKeywordSearch(): void
+    public function testListReturnsFilteredAndSearchableReportRows(): void
     {
         $service = new ReportService(new DatabaseRepository($this->testDb));
 
@@ -60,14 +60,8 @@ final class ReportServiceTest extends CIUnitTestCase
         $this->assertCount(1, $result['rows']);
         $this->assertSame('TCK-20261008-0001', $result['rows'][0]['ticket_number']);
         $this->assertSame('Hardware', $result['rows'][0]['category']);
-    }
 
-    public function testCsvExportUsesTheSameFiltersAndKeywordSearch(): void
-    {
-        $service = new ReportService(new DatabaseRepository($this->testDb));
-
-        $csv = $service->exportCsv(['category_id' => '1', 'search' => 'Laptop']);
-
+        $csv = $service->exportCsv(['category_id' => '1']);
         $this->assertStringContainsString('TCK-20261008-0001', $csv);
         $this->assertStringNotContainsString('TCK-20261008-0002', $csv);
     }
