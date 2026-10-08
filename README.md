@@ -116,7 +116,7 @@ Kegagalan dikembalikan ke antrean dengan exponential backoff hingga lima percoba
 - Ticket engine untuk nomor `TCK-YYYYMMDD-NNNN`, create/read/update, assignment, priority, workflow transition dari tabel, activity timeline, filter, pencarian, dan DataTables server-side.
 - OpenWA webhook dengan secret, raw event storage, idempotency, pencocokan nomor pegawai ternormalisasi, guided flow, acknowledgement dan update status melalui queue.
 - Dashboard agregat per status/kategori/prioritas dan tren harian; filter tanggal.
-- Laporan tiket dengan filter dan CSV yang aman dari formula injection.
+- Laporan tiket server-side dengan filter, pencarian kata kunci, dan CSV yang memakai filter/pencarian sama serta aman dari formula injection.
 - Bootstrap 5.3, DataTables.net, Chart.js dan stylesheet Xakti Admin Template.
 
 Xakti Admin Template menggunakan lisensi MIT; stylesheet dilayani melalui jsDelivr dan dipatok pada commit upstream `d70e4bb6324c9f9a8c00d7aa135e7eadbe23232c` dari [repository Xakti](https://github.com/fhdjg/xakti-admin-template).

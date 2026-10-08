@@ -21,6 +21,7 @@ $routes->group('admin', ['filter' => 'auth'], static function ($routes) {
     $routes->post('tickets/(:num)/assignment', 'TicketController::assign/$1', ['filter' => 'permission:ticket.assign']);
     $routes->post('tickets/(:num)/messages', 'TicketController::comment/$1', ['filter' => 'permission:ticket.message.create']);
     $routes->get('reports', 'ReportController::index', ['filter' => 'permission:report.view']);
+    $routes->get('reports/datatables', 'ReportController::datatable', ['filter' => 'permission:report.view']);
     $routes->get('reports/tickets.csv', 'ReportController::export', ['filter' => 'permission:report.export']);
     $routes->get('master/(:segment)/datatable', 'MasterDataController::datatable/$1');
     $routes->get('master/(:segment)', 'MasterDataController::index/$1');
