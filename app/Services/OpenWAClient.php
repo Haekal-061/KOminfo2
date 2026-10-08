@@ -9,11 +9,14 @@ class OpenWAClient
         $baseUrl = rtrim((string) env('OPENWA_BASE_URL'), '/');
         $apiKey = (string) env('OPENWA_API_KEY');
         $sessionId = (string) env('OPENWA_SESSION_ID');
-        if ($baseUrl === '' || $apiKey === '' || $sessionId === '') {
-            throw new \RuntimeException('OPENWA_BASE_URL, OPENWA_API_KEY, dan OPENWA_SESSION_ID wajib dikonfigurasi.');
+        if ($baseUrl === '' || $apiKey === '') {
+            throw new \RuntimeException('OPENWA_BASE_URL dan OPENWA_API_KEY wajib dikonfigurasi.');
         }
 
-        $path = (string) env('OPENWA_SEND_PATH') ?: '/api/sessions/{sessionId}/messages/send-text';
+        $path = (string) env('OPENWA_SEND_PATH') ?: '/api/messages/sendText';
+        if (str_contains($path, '{sessionId}') && $sessionId === '') {
+            throw new \RuntimeException('OPENWA_SESSION_ID wajib diatur ketika OPENWA_SEND_PATH memakai {sessionId}.');
+        }
         $path = str_replace('{sessionId}', rawurlencode($sessionId), $path);
         $client = service('curlrequest', [
             'baseURI' => $baseUrl,
@@ -29,7 +32,10 @@ class OpenWAClient
         }
         $response = $client->post($path, [
             'headers' => $headers,
-            'json' => ['chatId' => str_contains($recipient, '@') ? $recipient : $recipient . '@c.us', 'text' => $text],
+            'json' => [
+                'to' => str_contains($recipient, '@') ? $recipient : $recipient . '@c.us',
+                'content' => $text,
+            ],
         ]);
         $status = $response->getStatusCode();
         $body = (string) $response->getBody();

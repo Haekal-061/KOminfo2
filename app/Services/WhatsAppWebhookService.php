@@ -18,59 +18,200 @@ class WhatsAppWebhookService
         $this->tickets ??= new TicketService($this->db);
     }
 
-    public function handle(array $payload): array
+    public function enqueue(array $payload, ?string $idempotencyKey = null): array
     {
-        $envelope = is_array($payload['payload'] ?? null) ? $payload['payload'] : $payload;
-        $data = is_array($envelope['data'] ?? null) ? $envelope['data'] : $envelope;
-        $messageId = (string) ($data['id'] ?? $data['messageId'] ?? $data['message_id'] ?? '');
-        $senderRaw = (string) ($data['senderPhone'] ?? $data['from'] ?? $data['chatId'] ?? $data['sender'] ?? '');
-        $body = trim((string) ($data['body'] ?? $data['text'] ?? $data['message'] ?? ''));
-        $eventType = (string) ($envelope['event'] ?? $payload['event'] ?? 'message.received');
-        if ($messageId === '') {
-            throw new \InvalidArgumentException('Payload webhook harus memiliki id pesan.');
-        }
+        $this->validateEnvelope($payload);
+        $eventType = $this->eventType($payload);
+        $eventPayload = is_array($payload['payload'] ?? null) ? $payload['payload'] : $payload;
+        $message = is_array($eventPayload['message'] ?? null)
+            ? $eventPayload['message']
+            : (is_array($eventPayload['data'] ?? null) ? $eventPayload['data'] : $eventPayload);
+        $messageId = $this->messageId($message);
+        $sessionId = is_string($payload['sessionId'] ?? null) ? $payload['sessionId'] : '';
+        $idempotencyKey = $idempotencyKey ?: (is_string($payload['idempotencyKey'] ?? null) ? $payload['idempotencyKey'] : null);
+        $rawKey = $idempotencyKey ?: ($sessionId !== ''
+            ? $sessionId . "\0" . $eventType . "\0" . ($messageId ?: hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR)))
+            : ($messageId ?: hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR))));
+        $externalId = $sessionId === '' && $idempotencyKey === null && $messageId !== '' && strlen($messageId) <= 190
+            ? $messageId
+            : hash('sha256', $rawKey);
         $now = date('Y-m-d H:i:s');
-        $this->db->query(
-            'INSERT IGNORE INTO webhook_events (channel, external_message_id, event_type, payload, processing_status, received_at) VALUES (?, ?, ?, ?, ?, ?)',
-            ['whatsapp', $messageId, $eventType, json_encode($payload, JSON_THROW_ON_ERROR), 'received', $now],
-        );
-        if ($this->db->affectedRows() !== 1) {
-            return ['accepted' => true, 'duplicate' => true];
+
+        $this->db->table('webhook_events')->ignore(true)->insert([
+            'channel' => 'whatsapp',
+            'external_message_id' => $externalId,
+            'event_type' => $eventType,
+            'payload' => json_encode($payload, JSON_THROW_ON_ERROR),
+            'processing_status' => 'received',
+            'received_at' => $now,
+            'available_at' => $now,
+        ]);
+
+        return [
+            'accepted' => true,
+            'duplicate' => $this->db->affectedRows() !== 1,
+        ];
+    }
+
+    public function processPending(int $limit): array
+    {
+        $now = date('Y-m-d H:i:s');
+        $staleLock = date('Y-m-d H:i:s', time() - 600);
+        $this->db->table('webhook_events')->where('processing_status', 'processing')
+            ->where('locked_at <', $staleLock)
+            ->update(['processing_status' => 'received', 'locked_at' => null, 'available_at' => $now]);
+
+        $pending = $this->db->table('webhook_events')->where('processing_status', 'received')
+            ->groupStart()->where('available_at', null)->orWhere('available_at <=', $now)->groupEnd()
+            ->orderBy('id')->limit(max(1, min(100, $limit)))->get()->getResultArray();
+        $stats = ['processed' => 0, 'completed' => 0, 'failed' => 0];
+
+        foreach ($pending as $event) {
+            $this->db->table('webhook_events')->where(['id' => $event['id'], 'processing_status' => 'received'])
+                ->update(['processing_status' => 'processing', 'locked_at' => $now]);
+            if ($this->db->affectedRows() !== 1) {
+                continue;
+            }
+
+            $stats['processed']++;
+            $transactionStarted = false;
+            try {
+                $payload = json_decode($event['payload'], true, 512, JSON_THROW_ON_ERROR);
+                if (! is_array($payload)) {
+                    throw new \UnexpectedValueException('Payload webhook tersimpan bukan objek JSON.');
+                }
+                $transactionStarted = $this->db->transBegin();
+                if (! $transactionStarted) {
+                    throw new \RuntimeException('Tidak dapat memulai transaksi pemrosesan webhook.');
+                }
+                $this->processEvent($event, $payload);
+                if (! $this->db->transStatus()) {
+                    throw new \RuntimeException('Pemrosesan webhook gagal disimpan.');
+                }
+                if (! $this->db->transCommit()) {
+                    throw new \RuntimeException('Tidak dapat menyimpan hasil pemrosesan webhook.');
+                }
+                $transactionStarted = false;
+                $stats['completed']++;
+            } catch (\Throwable $exception) {
+                if ($transactionStarted) {
+                    $this->db->transRollback();
+                }
+                $attempt = (int) $event['attempt_count'] + 1;
+                $terminal = $attempt >= 5;
+                $this->db->table('webhook_events')->where('id', $event['id'])->update([
+                    'processing_status' => $terminal ? 'failed' : 'received',
+                    'attempt_count' => $attempt,
+                    'available_at' => date('Y-m-d H:i:s', time() + min(3600, 60 * (2 ** ($attempt - 1)))),
+                    'locked_at' => null,
+                    'last_error' => mb_substr($exception->getMessage(), 0, 1000),
+                ]);
+                log_message('error', 'OpenWA webhook event #{id} failed on attempt {attempt}: {error}', [
+                    'id' => $event['id'], 'attempt' => $attempt, 'error' => $exception->getMessage(),
+                ]);
+                $stats['failed']++;
+            }
         }
-        $eventId = (int) $this->db->insertID();
+
+        return $stats;
+    }
+
+    private function processEvent(array $event, array $payload): void
+    {
+        $eventType = $this->eventType($payload);
         if ($eventType !== 'message.received') {
-            $this->markProcessed($eventId, 'ignored');
-            return ['accepted' => true, 'ignored' => 'unsupported_event'];
+            $this->markProcessed((int) $event['id'], 'ignored');
+            return;
         }
-        if ($senderRaw === '' || $body === '') {
-            $this->markProcessed($eventId, 'rejected');
-            throw new \InvalidArgumentException('Payload message.received harus memiliki pengirim dan teks pesan.');
+
+        $eventPayload = is_array($payload['payload'] ?? null) ? $payload['payload'] : $payload;
+        $message = is_array($eventPayload['message'] ?? null)
+            ? $eventPayload['message']
+            : (is_array($eventPayload['data'] ?? null) ? $eventPayload['data'] : $eventPayload);
+        $messageId = $this->messageId($message);
+        $senderRaw = (string) ($message['senderPhone'] ?? $message['from'] ?? $message['chatId'] ?? $message['sender'] ?? '');
+        $body = trim((string) ($message['body'] ?? $message['text'] ?? $message['caption'] ?? (is_string($message['message'] ?? null) ? $message['message'] : '')));
+
+        if (($message['fromMe'] ?? false) || ($message['isFromMe'] ?? false)) {
+            $this->markProcessed((int) $event['id'], 'ignored');
+            return;
         }
         if (str_ends_with(strtolower($senderRaw), '@lid')) {
-            $this->markProcessed($eventId, 'rejected');
-            return ['accepted' => true, 'ignored' => 'unresolved_lid_sender'];
+            $this->markProcessed((int) $event['id'], 'rejected');
+            return;
         }
-        if (str_contains($senderRaw, '@g.us') || ($data['isGroup'] ?? false)) {
-            $this->markProcessed($eventId, 'ignored');
-            return ['accepted' => true, 'ignored' => 'group_message'];
+        if (str_contains($senderRaw, '@g.us') || ($message['isGroupMsg'] ?? $message['isGroup'] ?? false)) {
+            $this->markProcessed((int) $event['id'], 'ignored');
+            return;
+        }
+        if ($messageId === '' || $senderRaw === '' || $body === '') {
+            $this->markProcessed((int) $event['id'], 'rejected');
+            return;
+        }
+        if ($this->db->table('ticket_messages')->where(['channel' => 'whatsapp', 'external_message_id' => $messageId])->countAllResults()) {
+            $this->markProcessed((int) $event['id'], 'processed');
+            return;
         }
 
         try {
             $phone = PhoneNumberService::normalize(preg_replace('/@.*/', '', $senderRaw) ?? $senderRaw);
         } catch (\InvalidArgumentException) {
-            $this->db->table('webhook_events')->where('id', $eventId)->update(['processing_status' => 'rejected', 'processed_at' => $now]);
-            return ['accepted' => true, 'ignored' => 'invalid_sender'];
+            $this->markProcessed((int) $event['id'], 'rejected');
+            return;
         }
         $employee = $this->db->table('employees')->where(['whatsapp_normalized' => $phone, 'is_active' => 1])->get()->getRowArray();
         if (! $employee) {
             $this->tickets->queueMessage($phone, "Nomor Anda belum terdaftar sebagai pegawai KOMINFO PINRANG.\n\nSilakan hubungi administrator untuk melakukan registrasi.");
-            $this->markProcessed($eventId, 'rejected');
-            return ['accepted' => true, 'ignored' => 'unregistered_reporter'];
+            $this->markProcessed((int) $event['id'], 'rejected');
+            return;
         }
 
-        $outcome = $this->processRegisteredMessage($employee, $phone, $messageId, $body);
-        $this->markProcessed($eventId, 'processed');
-        return ['accepted' => true, 'result' => $outcome];
+        $this->processRegisteredMessage($employee, $phone, $messageId, $body);
+        $this->markProcessed((int) $event['id'], 'processed');
+    }
+
+    private function eventType(array $payload): string
+    {
+        $nested = is_array($payload['payload'] ?? null) ? $payload['payload'] : [];
+        $event = $payload['event'] ?? $nested['event'] ?? 'message.received';
+        return is_string($event) && $event !== '' && strlen($event) <= 100 ? $event : 'unknown';
+    }
+
+    private function validateEnvelope(array $payload): void
+    {
+        $nested = is_array($payload['payload'] ?? null) ? $payload['payload'] : [];
+        $event = $payload['event'] ?? $nested['event'] ?? null;
+        $hasV5Field = array_key_exists('webhookId', $payload)
+            || array_key_exists('sessionId', $payload)
+            || array_key_exists('timestamp', $payload);
+
+        if ($hasV5Field) {
+            if (! is_string($payload['webhookId'] ?? null) || $payload['webhookId'] === ''
+                || ! is_string($payload['sessionId'] ?? null) || $payload['sessionId'] === ''
+                || ! is_string($event) || $event === '' || strlen($event) > 100
+                || ! isset($payload['timestamp']) || ! is_numeric($payload['timestamp'])
+                || ! is_finite((float) $payload['timestamp'])
+                || ! array_key_exists('payload', $payload)) {
+                throw new \InvalidArgumentException('Envelope webhook v5 tidak valid.');
+            }
+            return;
+        }
+
+        $legacyPayload = is_array($payload['payload'] ?? null)
+            ? ($nested['data'] ?? null)
+            : ($payload['data'] ?? null);
+        if (! is_string($event) || $event === '' || strlen($event) > 100 || ! is_array($legacyPayload)) {
+            throw new \InvalidArgumentException('Envelope webhook tidak valid.');
+        }
+    }
+
+    private function messageId(array $message): string
+    {
+        $id = $message['id'] ?? $message['messageId'] ?? $message['message_id'] ?? '';
+        if (is_array($id)) {
+            $id = $id['_serialized'] ?? $id['serialized'] ?? '';
+        }
+        return is_string($id) || is_numeric($id) ? (string) $id : '';
     }
 
     private function processRegisteredMessage(array $employee, string $phone, string $messageId, string $body): string
@@ -255,7 +396,7 @@ class WhatsAppWebhookService
     private function markProcessed(int $eventId, string $status): void
     {
         $this->db->table('webhook_events')->where('id', $eventId)->update([
-            'processing_status' => $status, 'processed_at' => date('Y-m-d H:i:s'),
+            'processing_status' => $status, 'processed_at' => date('Y-m-d H:i:s'), 'locked_at' => null,
         ]);
     }
 }

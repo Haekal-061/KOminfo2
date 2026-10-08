@@ -38,7 +38,8 @@ OPENWA_BASE_URL = 'http://127.0.0.1:2785'
 OPENWA_API_KEY = 'isi-api-key-openwa'
 OPENWA_SESSION_ID = 'session-kominfo'
 OPENWA_WEBHOOK_SECRET = 'buat-secret-random-yang-panjang'
-OPENWA_SEND_PATH = '/api/sessions/{sessionId}/messages/send-text'
+# Kontrak kirim default belum diverifikasi untuk semua versi gateway; validasi di /api-docs OpenWA.
+OPENWA_SEND_PATH = '/api/messages/sendText'
 OPENWA_TIMEOUT = 10
 ```
 
@@ -62,36 +63,82 @@ X-Webhook-Secret: <nilai OPENWA_WEBHOOK_SECRET>
 Content-Type: application/json
 ```
 
-Payload minimum yang diterima (payload event OpenWA dapat menyimpan field pesan di dalam properti `data`):
+OpenWA v5 menggunakan plugin `@open-wa/integration-webhook` yang dikonfigurasi pada `wa.config.mjs`; flag CLI `--webhook` saja tidak mengaktifkan delivery plugin. Contoh konfigurasi resmi v5 (isi URL aplikasi dan secret dari environment proses OpenWA):
+
+```js
+// wa.config.mjs pada host OpenWA
+const webhookSecret = process.env.OPENWA_WEBHOOK_SECRET?.trim();
+if (!webhookSecret) throw new Error('OPENWA_WEBHOOK_SECRET wajib diatur');
+
+export default {
+  sessionId: 'session-kominfo',
+  plugins: ['@open-wa/integration-webhook'],
+  pluginConfig: {
+    webhook: {
+      url: 'https://<host-aplikasi>/api/webhooks/openwa',
+      events: ['message.received'],
+      headers: { 'X-Webhook-Secret': webhookSecret },
+      retries: 3,
+      retryDelay: 1000,
+      timeout: 30000,
+      durability: { enabled: true, path: '.openwa/webhook-deliveries.sqlite', replayLimit: 1000 },
+    },
+  },
+};
+```
+
+Jalankan CLI dengan `--config ./wa.config.mjs` dan `--session-id session-kominfo`. Karena secret dipakai oleh dua proses terpisah, atur nilai yang sama secara aman pada proses aplikasi dan proses OpenWA.
+Referensi upstream: [Webhook payloads](https://openwa.dev/docs/client-and-integrations/webhook-payloads) dan [Easy API quick start](https://openwa.dev/docs/getting-started/easy-api).
+
+Struktur event v5:
 
 ```json
 {
-  "type": "event",
+  "webhookId": "webhook-instance-id",
+  "sessionId": "session-kominfo",
+  "event": "message.received",
+  "timestamp": 1730000000000,
   "payload": {
-    "event": "message.received",
-    "sessionId": "session-kominfo",
-    "data": {
+    "message": {
       "id": "openwa-message-id",
       "from": "628123456789@c.us",
-      "body": "Internet di ruang pelayanan tidak bisa"
+      "body": "Internet di ruang pelayanan tidak bisa",
+      "fromMe": false,
+      "isGroupMsg": false
     }
   }
 }
 ```
 
-Endpoint memvalidasi secret dan membatasi laju request, menyimpan event mentah, dan memakai `(channel, event_type, external_message_id)` untuk deduplikasi. Nomor pengirim harus terdaftar sebagai pegawai aktif; nomor tak terdaftar menerima pesan penolakan dan tidak dapat membuat ticket. Konfigurasikan OpenWA atau reverse proxy agar mengirim header secret; endpoint tidak menerima secret di URL.
+Endpoint memvalidasi secret sebelum membaca JSON, membatasi body hingga 2 MiB dan membatasi laju request. Event mentah disimpan ke antrean lalu endpoint langsung merespons HTTP 202; pemrosesan bisnis dilakukan terpisah. Deduplikasi memakai header `Idempotency-Key` atau field envelope `idempotencyKey` jika tersedia, lalu session/event/message ID (fallback hash untuk payload tanpa ID). `webhookId` hanya mengidentifikasi instance plugin, bukan pesan unik. Pesan yang berasal dari akun gateway dan pesan grup diabaikan. Nomor pengirim harus terdaftar sebagai pegawai aktif; nomor tak terdaftar menerima pesan penolakan dan tidak dapat membuat ticket. Konfigurasikan plugin OpenWA atau reverse proxy agar mengirim header secret; endpoint tidak menerima secret di URL.
 
 Untuk menguji dari PowerShell, ganti nilai host/secret/nomor/payload:
 
 ```powershell
 $headers = @{ 'X-Webhook-Secret' = 'nilai OPENWA_WEBHOOK_SECRET' }
-$body = @{ event = 'message.received'; data = @{ id = 'test-unique-001'; from = '628123456789@c.us'; body = 'ADUAN' } } | ConvertTo-Json -Depth 5
+$body = @{ webhookId = 'local-test'; sessionId = 'session-kominfo'; event = 'message.received'; timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); payload = @{ message = @{ id = @{ _serialized = 'test-unique-001' }; from = '628123456789@c.us'; body = 'ADUAN'; fromMe = $false; isGroupMsg = $false } } } | ConvertTo-Json -Depth 8
 Invoke-RestMethod -Method Post -Uri 'http://localhost:8080/api/webhooks/openwa' -Headers $headers -ContentType 'application/json' -Body $body
 ```
 
+Jalankan worker event masuk dan worker notifikasi keluar secara terpisah:
+
+```powershell
+php spark openwa:webhooks:work 20
+php spark notifications:work 20
+```
+
+Untuk pemrosesan terus-menerus, jalankan masing-masing loop dalam proses/worker terpisah:
+
+```powershell
+while ($true) { php spark openwa:webhooks:work 20; Start-Sleep -Seconds 2 }
+while ($true) { php spark notifications:work 20; Start-Sleep -Seconds 15 }
+```
+
+Event yang gagal diproses dicoba ulang hingga lima kali dengan exponential backoff; lock yang lebih lama dari 10 menit akan dipulihkan.
+
 Kirim `ADUAN` untuk guided flow kategori lalu uraian. Free text membuat ticket pada kategori aktif pertama hanya bila pelapor tidak punya ticket aktif; jika ada satu ticket aktif, pesan tidak ditempel otomatis dan bot meminta referensi eksplisit `#TCK-YYYYMMDD-NNNN`. Jika ada beberapa ticket aktif, bot meminta pemilihan bernomor lalu menerima satu pesan untuk ticket yang secara eksplisit dipilih. Gunakan `BARU: uraian` untuk membuat ticket baru walau masih ada ticket aktif.
 
-**Kontrak API OpenWA:** adapter mengikuti dokumentasi REST upstream `POST /api/sessions/{sessionId}/messages/send-text`, mengirim `X-API-Key` serta JSON `chatId` (`<nomor>@c.us`) dan `text`. Base URL, API key, session ID, timeout, dan send path dikonfigurasi dari environment. `OPENWA_SEND_PATH` default ke endpoint tersebut. Smoke-test endpoint dan webhook secret dengan versi/deployment OpenWA yang digunakan sebelum produksi. Jangan menaruh API key di frontend atau log.
+**Kontrak API OpenWA keluar:** adapter mengikuti Easy API v5: `POST /api/messages/sendText`, header `X-API-Key`, dan JSON `to` (`<nomor>@c.us`) serta `content`. Base URL, API key, session ID, timeout, dan path dikonfigurasi dari environment; path dapat dioverride melalui `OPENWA_SEND_PATH`. Endpoint alternatif/alias dapat dilihat di Swagger gateway target pada `/api-docs/`. Smoke test tetap diperlukan untuk memeriksa versi, session readiness (`/health`), auth, dan pengiriman aktual sebelum produksi. Jangan menaruh API key di frontend atau log.
 
 ## Antrean notifikasi
 
@@ -101,13 +148,7 @@ Pesan acknowledgement dan update status disimpan ke `notification_queue`. Jalank
 php spark notifications:work 20
 ```
 
-Untuk polling terus-menerus pada PowerShell:
-
-```powershell
-while ($true) { php spark notifications:work 20; Start-Sleep -Seconds 15 }
-```
-
-Kegagalan dikembalikan ke antrean dengan exponential backoff hingga lima percobaan, kemudian berstatus `failed`. Kegagalan OpenWA tidak membatalkan ticket.
+Untuk polling terus-menerus pada PowerShell: `while ($true) { php spark notifications:work 20; Start-Sleep -Seconds 15 }`. Kegagalan dikembalikan ke antrean dengan exponential backoff hingga lima percobaan, kemudian berstatus `failed`. Kegagalan OpenWA tidak membatalkan ticket.
 
 ## Fitur MVP
 
