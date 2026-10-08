@@ -6,30 +6,49 @@ use App\Repositories\DatabaseRepository;
 
 class DashboardService
 {
+    private DatabaseRepository $db;
+
+    public function __construct(?DatabaseRepository $db = null)
+    {
+        $this->db = $db ?? new DatabaseRepository();
+    }
+
     public function data(string $from, string $to): array
     {
-        $db = new DatabaseRepository();
+        $db = $this->db;
         $base = static function () use ($db, $from, $to) {
             return $db->table('tickets')->where('deleted_at', null)
                 ->where('created_at >=', $from . ' 00:00:00')
                 ->where('created_at <=', $to . ' 23:59:59');
         };
-        $statuses = $db->table('tickets t')->select('s.id, s.name, s.code, s.color, COUNT(t.id) AS total')
-            ->join('ticket_statuses s', 's.id = t.status_id')->where('t.deleted_at', null)
-            ->where('t.created_at >=', $from . ' 00:00:00')->where('t.created_at <=', $to . ' 23:59:59')
-            ->groupBy('s.id')->orderBy('s.sort_order')->get()->getResultArray();
-        $categories = $db->table('tickets t')->select('c.name, c.color, COUNT(t.id) AS total')
-            ->join('categories c', 'c.id = t.category_id')->where('t.deleted_at', null)
-            ->where('t.created_at >=', $from . ' 00:00:00')->where('t.created_at <=', $to . ' 23:59:59')
-            ->groupBy('c.id')->orderBy('total', 'DESC')->get()->getResultArray();
-        $priorities = $db->table('tickets t')->select('p.name, p.color, COUNT(t.id) AS total')
-            ->join('priorities p', 'p.id = t.priority_id')->where('t.deleted_at', null)
-            ->where('t.created_at >=', $from . ' 00:00:00')->where('t.created_at <=', $to . ' 23:59:59')
-            ->groupBy('p.id')->orderBy('p.sort_order')->get()->getResultArray();
-        $trend = $db->query(
-            'SELECT DATE(created_at) AS day, COUNT(*) AS total FROM tickets WHERE deleted_at IS NULL AND created_at >= ? AND created_at <= ? GROUP BY DATE(created_at) ORDER BY day',
-            [$from . ' 00:00:00', $to . ' 23:59:59'],
-        )->getResultArray();
+        $start = $from . ' 00:00:00';
+        $end = $to . ' 23:59:59';
+        $connection = $db->connection();
+        $ticketsTable = $connection->prefixTable('tickets') . ' t';
+        $ticketJoin = static fn (string $field): string => 't.' . $field . ' = master.id AND t.deleted_at IS NULL'
+            . ' AND t.created_at >= ' . $connection->escape($start)
+            . ' AND t.created_at <= ' . $connection->escape($end);
+        $statuses = $db->table('ticket_statuses master')
+            ->select('master.id, master.name, master.code, master.color, COUNT(t.id) AS total', false)
+            ->join($ticketsTable, $ticketJoin('status_id'), 'left', false)
+            ->groupBy(['master.id', 'master.name', 'master.code', 'master.color', 'master.sort_order'])
+            ->orderBy('master.sort_order')->orderBy('master.id')
+            ->get()->getResultArray();
+        $categories = $db->table('categories master')
+            ->select('master.name, master.color, COUNT(t.id) AS total', false)
+            ->join($ticketsTable, $ticketJoin('category_id'), 'left', false)
+            ->groupBy(['master.id', 'master.name', 'master.color'])
+            ->orderBy('total', 'DESC')->orderBy('master.name')
+            ->get()->getResultArray();
+        $priorities = $db->table('priorities master')
+            ->select('master.name, master.color, COUNT(t.id) AS total', false)
+            ->join($ticketsTable, $ticketJoin('priority_id'), 'left', false)
+            ->groupBy(['master.id', 'master.name', 'master.color', 'master.sort_order'])
+            ->orderBy('master.sort_order')->orderBy('master.id')
+            ->get()->getResultArray();
+        $trend = $base()->select('DATE(created_at) AS day, COUNT(*) AS total', false)
+            ->groupBy('DATE(created_at)', false)->orderBy('day')
+            ->get()->getResultArray();
         return [
             'total' => $base()->countAllResults(),
             'statuses' => $statuses, 'categories' => $categories, 'priorities' => $priorities, 'trend' => $trend,

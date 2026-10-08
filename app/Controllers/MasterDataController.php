@@ -78,12 +78,12 @@ class MasterDataController extends BaseController
             if (! $id) {
                 $rules['password'] = 'required|min_length[12]';
             }
-            if (in_array($resource, ['categories', 'statuses', 'priorities'], true)) {
-                $rules['color'] = 'required|regex_match[/^#[0-9A-Fa-f]{6}$/]';
-            }
-            if ($resource === 'employees' && ! empty($input['email'])) {
-                $rules['email'] = 'valid_email|max_length[190]';
-            }
+        }
+        if (in_array($resource, ['categories', 'statuses', 'priorities'], true)) {
+            $rules['color'] = 'required|regex_match[/^#[0-9A-Fa-f]{6}$/]';
+        }
+        if ($resource === 'employees' && ! empty($input['email'])) {
+            $rules['email'] = 'valid_email|max_length[190]';
         }
         if ($rules !== [] && ! service('validation')->setRules($rules)->run($input)) {
             return redirect()->back()->withInput()->with('error', implode(' ', service('validation')->getErrors()));

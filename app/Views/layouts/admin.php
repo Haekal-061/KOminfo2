@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title><?= esc($title ?? 'Ticketing') ?> | KOMINFO PINRANG</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://raw.githubusercontent.com/fhdjg/xakti-admin-template/d70e4bb6324c9f9a8c00d7aa135e7eadbe23232c/assets/css/app.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/gh/fhdjg/xakti-admin-template@d70e4bb6324c9f9a8c00d7aa135e7eadbe23232c/assets/css/app.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link href="https://cdn.datatables.net/2.1.8/css/dataTables.bootstrap5.min.css" rel="stylesheet">
     <style>

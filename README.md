@@ -119,7 +119,7 @@ Kegagalan dikembalikan ke antrean dengan exponential backoff hingga lima percoba
 - Laporan tiket dengan filter dan CSV yang aman dari formula injection.
 - Bootstrap 5.3, DataTables.net, Chart.js dan stylesheet Xakti Admin Template.
 
-Xakti Admin Template menggunakan lisensi MIT; stylesheet dipatok pada commit upstream `d70e4bb6324c9f9a8c00d7aa135e7eadbe23232c` dari [repository Xakti](https://github.com/fhdjg/xakti-admin-template).
+Xakti Admin Template menggunakan lisensi MIT; stylesheet dilayani melalui jsDelivr dan dipatok pada commit upstream `d70e4bb6324c9f9a8c00d7aa135e7eadbe23232c` dari [repository Xakti](https://github.com/fhdjg/xakti-admin-template).
 
 ## Pengujian
 

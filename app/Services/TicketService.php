@@ -190,8 +190,14 @@ class TicketService
         if (isset($data['priority_id']) && ! $this->db->table('priorities')->where(['id' => $data['priority_id'], 'is_active' => 1])->countAllResults()) {
             throw new \InvalidArgumentException('Prioritas tidak valid.');
         }
-        if (isset($data['service_type_id']) && ! $this->db->table('service_types')->where(['id' => $data['service_type_id'], 'is_active' => 1])->countAllResults()) {
-            throw new \InvalidArgumentException('Jenis layanan tidak valid.');
+        $categoryId = $data['category_id'] ?? $ticket['category_id'];
+        $serviceTypeId = $data['service_type_id'] ?? $ticket['service_type_id'];
+        if ($serviceTypeId !== null && ! $this->db->table('service_types')->where([
+            'id' => $serviceTypeId,
+            'category_id' => $categoryId,
+            'is_active' => 1,
+        ])->countAllResults()) {
+            throw new \InvalidArgumentException('Jenis layanan tidak sesuai dengan kategori atau tidak aktif.');
         }
         if ($data !== []) {
             $data['updated_at'] = date('Y-m-d H:i:s');
