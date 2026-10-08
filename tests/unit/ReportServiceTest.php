@@ -61,9 +61,17 @@ final class ReportServiceTest extends CIUnitTestCase
         $this->assertSame('TCK-20261008-0001', $result['rows'][0]['ticket_number']);
         $this->assertSame('Hardware', $result['rows'][0]['category']);
 
-        $csv = $service->exportCsv(['category_id' => '1']);
+        $csv = $service->exportCsv(['category_id' => '1', 'keyword' => 'Laptop']);
         $this->assertStringContainsString('TCK-20261008-0001', $csv);
         $this->assertStringNotContainsString('TCK-20261008-0002', $csv);
+    }
+
+    public function testCsvExportRejectsNonStringSearch(): void
+    {
+        $service = new ReportService(new DatabaseRepository($this->testDb));
+
+        $this->expectException(\InvalidArgumentException::class);
+        $service->exportCsv(['keyword' => ['invalid']]);
     }
 
     public function testListRejectsMalformedFilterValues(): void

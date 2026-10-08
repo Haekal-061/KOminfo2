@@ -42,16 +42,7 @@ class ReportService
 
         $total = $this->queryBuilder()->countAllResults();
         $builder = $this->queryBuilder($filters);
-        if ($search !== '') {
-            $builder->groupStart()
-                ->like('t.ticket_number', $search)->orLike('e.name', $search)
-                ->orLike('e.employee_number', $search)->orLike('c.name', $search)
-                ->orLike('sv.name', $search)->orLike('p.name', $search)
-                ->orLike('s.name', $search)->orLike('u.name', $search)
-                ->orLike('tm.name', $search)->orLike('t.subject', $search)
-                ->orLike('t.description', $search)
-                ->groupEnd();
-        }
+        $this->applySearch($builder, $search);
 
         $filtered = $builder->countAllResults(false);
         $rows = $builder->select('t.ticket_number, t.created_at, e.employee_number, e.name AS reporter, e.whatsapp_number, c.name AS category, sv.name AS service, p.name AS priority, s.name AS status, u.name AS assignee, tm.name AS team, t.subject, t.description')
@@ -64,9 +55,13 @@ class ReportService
 
     public function exportCsv(array $filters): string
     {
-        $builder = $this->queryBuilder($filters)
-            ->select('t.ticket_number, t.created_at, e.employee_number, e.name AS reporter, e.whatsapp_number, c.name AS category, sv.name AS service, p.name AS priority, s.name AS status, u.name AS assignee, tm.name AS team, t.subject, t.description');
-        $rows = $builder->orderBy('t.created_at', 'DESC')->get()->getResultArray();
+        if (isset($filters['keyword']) && ! is_string($filters['keyword'])) {
+            throw new \InvalidArgumentException('Kata kunci laporan tidak valid.');
+        }
+        $builder = $this->queryBuilder($filters);
+        $this->applySearch($builder, (string) ($filters['keyword'] ?? ''));
+        $rows = $builder->select('t.ticket_number, t.created_at, e.employee_number, e.name AS reporter, e.whatsapp_number, c.name AS category, sv.name AS service, p.name AS priority, s.name AS status, u.name AS assignee, tm.name AS team, t.subject, t.description')
+            ->orderBy('t.created_at', 'DESC')->get()->getResultArray();
         $stream = fopen('php://temp', 'r+');
         if ($stream === false) {
             throw new \RuntimeException('Tidak dapat menyiapkan file CSV.');
@@ -120,5 +115,21 @@ class ReportService
             }
         }
         return $builder;
+    }
+
+    private function applySearch($builder, string $search): void
+    {
+        if ($search === '') {
+            return;
+        }
+
+        $builder->groupStart()
+            ->like('t.ticket_number', $search)->orLike('e.name', $search)
+            ->orLike('e.employee_number', $search)->orLike('c.name', $search)
+            ->orLike('sv.name', $search)->orLike('p.name', $search)
+            ->orLike('s.name', $search)->orLike('u.name', $search)
+            ->orLike('tm.name', $search)->orLike('t.subject', $search)
+            ->orLike('t.description', $search)
+            ->groupEnd();
     }
 }

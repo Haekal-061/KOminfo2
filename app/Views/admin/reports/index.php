@@ -8,11 +8,12 @@
 <div class="col-sm-6 col-lg-2"><label class="form-label" for="reportAssignee">Operator</label><select id="reportAssignee" class="form-select" name="assignee_user_id"><option value="">Semua</option><?php foreach ($users as $row): ?><option value="<?= $row['id'] ?>" <?= (string) ($selectedFilters['assignee_user_id'] ?? '') === (string) $row['id'] ? 'selected' : '' ?>><?= esc($row['name']) ?></option><?php endforeach ?></select></div>
 <div class="col-sm-6 col-lg-2"><label class="form-label" for="reportFrom">Dari</label><input id="reportFrom" class="form-control" type="date" name="from" value="<?= esc($selectedFilters['from'] ?? '') ?>"></div>
 <div class="col-sm-6 col-lg-2"><label class="form-label" for="reportTo">Sampai</label><input id="reportTo" class="form-control" type="date" name="to" value="<?= esc($selectedFilters['to'] ?? '') ?>"></div>
+<input id="reportExportSearch" type="hidden" name="keyword" value="<?= esc($selectedFilters['keyword'] ?? '') ?>">
 </form></div></div>
 <div class="card"><div class="card-body">
 <div class="row g-3 align-items-center mb-3">
 <div class="col-md-4"><label class="d-flex align-items-center gap-2 mb-0"><span>Tampilkan</span><select id="reportPageLength" class="form-select form-select-sm" style="width:auto"><option value="10">10</option><option value="25">25</option><option value="50">50</option><option value="100">100</option></select><span>entri</span></label></div>
-<div class="col-md-4 d-flex justify-content-center"><input id="reportSearch" class="form-control form-control-sm" type="search" placeholder="Cari laporan..." aria-label="Cari laporan"></div>
+<div class="col-md-4 d-flex justify-content-center"><input id="reportSearch" class="form-control form-control-sm" type="search" placeholder="Cari laporan..." aria-label="Cari laporan" value="<?= esc($selectedFilters['keyword'] ?? '') ?>"></div>
 <div class="col-md-4 d-flex justify-content-md-end"><button class="btn btn-primary btn-sm" type="submit" form="reportFilters" formaction="<?= site_url('admin/reports/tickets.csv') ?>"><i class="bi bi-download me-1"></i>Unduh CSV</button></div>
 </div>
 <div class="table-responsive"><table id="reportTable" class="table table-hover align-middle w-100"><thead><tr><th>No. Ticket</th><th>Dibuat</th><th>Pelapor</th><th>Kategori</th><th>Jenis Layanan</th><th>Prioritas</th><th>Status</th><th>Operator</th><th>Tim</th><th>Subjek</th></tr></thead></table></div></div></div>
@@ -24,6 +25,10 @@ const reportTable = new DataTable('#reportTable',{processing:true,serverSide:tru
 {data:'priority',render:escapeReportCell},{data:'status',render:escapeReportCell},{data:'assignee',render:value=>escapeReportCell(value)||'<span class="text-secondary">Belum di-assign</span>'},
 {data:'team',render:value=>escapeReportCell(value)||'<span class="text-secondary">-</span>'},{data:'subject',render:escapeReportCell}],order:[[1,'desc']],language:{url:'https://cdn.datatables.net/plug-ins/2.1.8/i18n/id.json'}});
 document.querySelectorAll('#reportFilters select,#reportFilters input').forEach(element=>element.addEventListener('change',()=>reportTable.ajax.reload()));
-document.getElementById('reportSearch').addEventListener('input',event=>reportTable.search(event.target.value).draw());
+document.getElementById('reportSearch').addEventListener('input',event=>{
+    const search=event.target.value;
+    document.getElementById('reportExportSearch').value=search;
+    reportTable.search(search).draw();
+});
 document.getElementById('reportPageLength').addEventListener('change',event=>reportTable.page.len(Number(event.target.value)).draw());
 </script><?= $this->endSection() ?>
